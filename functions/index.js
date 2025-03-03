@@ -4,19 +4,23 @@ const admin = require("firebase-admin");
 const serviceAccount = require("./gcloud/serviceAccount.json");
 const firestore = require("firebase-admin/firestore");
 const nodemailer = require('nodemailer');
+require('dotenv').config();
 
 admin.initializeApp(serviceAccount);
+
+/********* VARIABLES PARA REEMPLAZAR *********/
+const bearerTokenMercadoPago = process.env.BEARER_TOKEN_MERCADO_PAGO;
+const TIENDA_FEG_EMAIL = process.env.TIENDA_FEG_EMAIL;
+/********* VARIABLES PARA REEMPLAZAR *********/
 
 // Configurar el transporter (esto iría después de admin.initializeApp)
 const transporter = nodemailer.createTransport({
   service: 'gmail', // o configura tu propio SMTP
   auth: {
-    user: 'mati.iribarren98@gmail.com',
+    user: TIENDA_FEG_EMAIL,
     pass: 'iebr shjr njbj udlz' // Se recomienda usar una "app password"
   }
 });
-
-const bearerTokenMercadoPago = 'Bearer APP_USR-824237712820488-120716-9c70df22ad7c04e358cfdc4e7a076960-439285460';
 
 exports.processOrder = onRequest(async (request, response) => {
   try {
@@ -27,17 +31,30 @@ exports.processOrder = onRequest(async (request, response) => {
       return response.status(400).send({ error: 'Solicitud inválida.' });
     }
 
-    const paymentId = request.body.data.id;
+    let externalReference;
+    let paymentStatus;
+    let paymentId;
+    if (request.body.paymentMethod && request.body.paymentMethod === 'transfer') {
+      externalReference = request.body.external_reference;
+      paymentStatus = request.body.status;
+      paymentId = 'transferencia bancaria';
 
-    // Obtener el pago desde mercadopago
-    const result = await (await fetch(`https://api.mercadopago.com/v1/payments/${paymentId}`, {
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': bearerTokenMercadoPago
-      }
-    })).json();
-    
-    const externalReference = result.external_reference;
+    } else {
+
+      const mpId = request.body.data.id;
+
+      // Obtener el pago desde mercadopago
+      const result = await (await fetch(`https://api.mercadopago.com/v1/payments/${mpId}`, {
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': bearerTokenMercadoPago
+        }
+      })).json();
+      
+      externalReference = result.external_reference;
+      paymentStatus = result.status;
+      paymentId = mpId;
+    }
     const db = firestore.getFirestore();
 
     // Buscar la orden en Firestore
@@ -59,18 +76,12 @@ exports.processOrder = onRequest(async (request, response) => {
 
     // Actualizar información de pago
     await db.collection('orders').doc(order.id).update({
-      status: result.status,
-      paymentInformation: {
-        paymentId: result.id,
-        status: result.status,
-        paymentDate: result.date_approved,
-        paymentMethod: result.payment_method_id,
-        paymentType: result.transaction_amount,
-      },
+      status: paymentStatus,
+      paymentId,
       updatedAt: firestore.FieldValue.serverTimestamp()
     });
 
-    if (result.status === 'approved') {
+    if (paymentStatus === 'approved') {
       // Procesar actualización de stock
       const stockUpdates = order.products.map(async (product) => {
         const productRef = db.collection('products').doc(product.id);
@@ -97,20 +108,14 @@ exports.processOrder = onRequest(async (request, response) => {
       });
 
       await Promise.all(stockUpdates);
-
       console.log('Stock actualizado para todos los productos');
-
-      // Enviar email al vendedor
-      const productsList = order.products
-        .map(p => `• ${p.name} - ${p.quantity} unidad(es)`)
-        .join('\n');
 
       const mailOptions = {
         from: process.env.EMAIL_USER,
         to: 'mati.iribarren98@gmail.com',
         subject: `Nueva venta - Orden ${externalReference}`,
         html: `
-                <img src="https://firebasestorage.googleapis.com/v0/b/feg-dev.firebasestorage.app/o/logo.png?alt=media&token=071754cd-a5da-48c4-bb72-c016930c6fa8" alt="Logo" style="width: 100px; height: 100px;">
+                <img src="https://firebasestorage.googleapis.com/v0/b/feg-dev.firebasestorage.app/o/logo.png?alt=media&token=071754cd-a5da-48c4-bb72-c016930c6fa8" alt="Logo" style="width: 150px; height: 100px;">
                 <h1>¡Nueva venta realizada!</h1>
                 <p>Detalles de la orden:</p>
                 <ul>
@@ -172,7 +177,7 @@ exports.processOrderByTransfer = onDocumentCreated('orders/{orderId}', async (ev
       to: 'mati.iribarren98@gmail.com',
       subject: `Confirmación de transferencia - Orden ${order.reference}`,
       html: `
-          <img src="https://firebasestorage.googleapis.com/v0/b/feg-dev.firebasestorage.app/o/logo.png?alt=media&token=071754cd-a5da-48c4-bb72-c016930c6fa8" alt="Logo" style="width: 100px; height: 100px;">
+          <img src="https://firebasestorage.googleapis.com/v0/b/feg-dev.firebasestorage.app/o/logo.png?alt=media&token=071754cd-a5da-48c4-bb72-c016930c6fa8" alt="Logo" style="width: 150px; height: 100px;">
           <h1>Nueva orden pendiente de confirmación</h1>
           <p>Por favor, confirma si has recibido la transferencia bancaria para la siguiente orden:</p>
           <div style="margin: 20px 0;">
@@ -216,11 +221,13 @@ exports.processOrderByTransfer = onDocumentCreated('orders/{orderId}', async (ev
 exports.confirmTransfer = onRequest(async (request, response) => {
   try {
     const { orderId, token } = request.query;
-    const orderDoc = await firestore.collection('orders').doc(orderId).get();
+    const db = firestore.getFirestore();
+    const orderDoc = await db.collection('orders').doc(orderId).get();
 
     if (!orderDoc.exists || orderDoc.data().confirmToken !== token) {
       return response.status(400).send('Token inválido o orden no encontrada');
     }
+    
 
     // Simular el body necesario para processOrder
     const simulatedBody = {
@@ -235,11 +242,11 @@ exports.confirmTransfer = onRequest(async (request, response) => {
 
     // Envia email al comprador
     const mailOptions = {
-      from: process.env.EMAIL_USER,
+      from: TIENDA_FEG_EMAIL,
       to: orderDoc.data().email,
       subject: `Confirmación de transferencia - Orden ${orderDoc.data().reference}`,
       html: `
-        <img src="https://firebasestorage.googleapis.com/v0/b/feg-dev.firebasestorage.app/o/logo.png?alt=media&token=071754cd-a5da-48c4-bb72-c016930c6fa8" alt="Logo" style="width: 100px; height: 100px;">
+        <img src="https://firebasestorage.googleapis.com/v0/b/feg-dev.firebasestorage.app/o/logo.png?alt=media&token=071754cd-a5da-48c4-bb72-c016930c6fa8" alt="Logo" style="width: 150px; height: 100px;">
         <h1>¡Transferencia confirmada!</h1>
         <p>La transferencia de la orden ${orderDoc.data().reference} ha sido confirmada.</p>
         <p>Detalles de la transferencia:</p>
@@ -285,7 +292,7 @@ exports.rejectTransfer = onRequest(async (request, response) => {
       to: orderDoc.data().email,
       subject: `Transferencia rechazada - Orden ${orderDoc.data().reference}`,
       html: `
-        <img src="https://firebasestorage.googleapis.com/v0/b/feg-dev.firebasestorage.app/o/logo.png?alt=media&token=071754cd-a5da-48c4-bb72-c016930c6fa8" alt="Logo" style="width: 100px; height: 100px;">
+        <img src="https://firebasestorage.googleapis.com/v0/b/feg-dev.firebasestorage.app/o/logo.png?alt=media&token=071754cd-a5da-48c4-bb72-c016930c6fa8" alt="Logo" style="width: 150px; height: 100px;">
         <h1>¡Transferencia rechazada!</h1>
         <p>La transferencia de la orden ${orderDoc.data().reference} ha sido rechazada.</p>
         <p>Detalles de la transferencia:</p>
