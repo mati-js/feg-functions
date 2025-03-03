@@ -16,16 +16,28 @@ const transporter = nodemailer.createTransport({
   }
 });
 
+const bearerTokenMercadoPago = 'Bearer APP_USR-824237712820488-120716-9c70df22ad7c04e358cfdc4e7a076960-439285460';
+
 exports.processOrder = onRequest(async (request, response) => {
   try {
     console.log('Iniciando procesamiento de orden:', request.body);
 
-    if (!request.body || !request.body.external_reference) {
+    if (!request.body) {
       console.error('Solicitud inválida:', request.body);
       return response.status(400).send({ error: 'Solicitud inválida.' });
     }
 
-    const externalReference = request.body.external_reference;
+    const paymentId = request.body.data.id;
+
+    // Obtener el pago desde mercadopago
+    const result = await (await fetch(`https://api.mercadopago.com/v1/payments/${paymentId}`, {
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': bearerTokenMercadoPago
+      }
+    })).json();
+    
+    const externalReference = result.external_reference;
     const db = firestore.getFirestore();
 
     // Buscar la orden en Firestore
@@ -47,11 +59,18 @@ exports.processOrder = onRequest(async (request, response) => {
 
     // Actualizar información de pago
     await db.collection('orders').doc(order.id).update({
-      paymentInformation: request.body,
+      status: result.status,
+      paymentInformation: {
+        paymentId: result.id,
+        status: result.status,
+        paymentDate: result.date_approved,
+        paymentMethod: result.payment_method_id,
+        paymentType: result.transaction_amount,
+      },
       updatedAt: firestore.FieldValue.serverTimestamp()
     });
 
-    if (request.body.status === 'approved') {
+    if (result.status === 'approved') {
       // Procesar actualización de stock
       const stockUpdates = order.products.map(async (product) => {
         const productRef = db.collection('products').doc(product.id);
@@ -78,6 +97,7 @@ exports.processOrder = onRequest(async (request, response) => {
       });
 
       await Promise.all(stockUpdates);
+
       console.log('Stock actualizado para todos los productos');
 
       // Enviar email al vendedor
@@ -89,18 +109,14 @@ exports.processOrder = onRequest(async (request, response) => {
         from: process.env.EMAIL_USER,
         to: 'mati.iribarren98@gmail.com',
         subject: `Nueva venta - Orden ${externalReference}`,
-        text: `¡Has realizado una nueva venta!\n\n
-                 Detalles de la orden:\n
-                 Referencia: ${externalReference}\n
-                 Productos vendidos:\n${productsList}\n\n
-                 Total: $${order.total}\n
-                 Fecha: ${(order.date.seconds * 1000).toLocaleString('es-AR')}`,
-        html: `<h1>¡Nueva venta realizada!</h1>
+        html: `
+                <img src="https://firebasestorage.googleapis.com/v0/b/feg-dev.firebasestorage.app/o/logo.png?alt=media&token=071754cd-a5da-48c4-bb72-c016930c6fa8" alt="Logo" style="width: 100px; height: 100px;">
+                <h1>¡Nueva venta realizada!</h1>
                 <p>Detalles de la orden:</p>
                 <ul>
+                  <li>Fecha: ${new Date(order.date.seconds * 1000).toLocaleString('es-AR')}</li>
                   <li>Referencia: ${externalReference}</li>
                   <li>Total: $${order.total}</li>
-                  <li>Fecha: ${(order.date.seconds * 1000).toLocaleString('es-AR')}</li>
                 </ul>
                 <h3>Productos vendidos:</h3>
                 <ul>${order.products.map(p => `<li>${p.name} - ${p.quantity} unidad(es)</li>`).join('')}</ul>`
@@ -156,6 +172,7 @@ exports.processOrderByTransfer = onDocumentCreated('orders/{orderId}', async (ev
       to: 'mati.iribarren98@gmail.com',
       subject: `Confirmación de transferencia - Orden ${order.reference}`,
       html: `
+          <img src="https://firebasestorage.googleapis.com/v0/b/feg-dev.firebasestorage.app/o/logo.png?alt=media&token=071754cd-a5da-48c4-bb72-c016930c6fa8" alt="Logo" style="width: 100px; height: 100px;">
           <h1>Nueva orden pendiente de confirmación</h1>
           <p>Por favor, confirma si has recibido la transferencia bancaria para la siguiente orden:</p>
           <div style="margin: 20px 0;">
@@ -163,7 +180,7 @@ exports.processOrderByTransfer = onDocumentCreated('orders/{orderId}', async (ev
             <ul>
               <li>Referencia: ${order.reference}</li>
               <li>Total: $${order.total}</li>
-              <li>Fecha: ${(order.date.seconds * 1000).toLocaleString('es-AR')}</li>
+              <li>Fecha: ${new Date(order.date.seconds * 1000).toLocaleString('es-AR')}</li>
             </ul>
             <h3>Productos:</h3>
             <ul>
@@ -216,6 +233,28 @@ exports.confirmTransfer = onRequest(async (request, response) => {
       body: simulatedBody
     }, response);
 
+    // Envia email al comprador
+    const mailOptions = {
+      from: process.env.EMAIL_USER,
+      to: orderDoc.data().email,
+      subject: `Confirmación de transferencia - Orden ${orderDoc.data().reference}`,
+      html: `
+        <img src="https://firebasestorage.googleapis.com/v0/b/feg-dev.firebasestorage.app/o/logo.png?alt=media&token=071754cd-a5da-48c4-bb72-c016930c6fa8" alt="Logo" style="width: 100px; height: 100px;">
+        <h1>¡Transferencia confirmada!</h1>
+        <p>La transferencia de la orden ${orderDoc.data().reference} ha sido confirmada.</p>
+        <p>Detalles de la transferencia:</p>
+        <ul>
+          <li>Referencia: ${orderDoc.data().reference}</li>
+          <li>Total: $${orderDoc.data().total}</li>
+          <li>Fecha: ${new Date(orderDoc.data().date.seconds * 1000).toLocaleString('es-AR')}</li>
+        </ul>
+        <p>Gracias por tu compra.</p>
+      `
+    }
+
+    await transporter.sendMail(mailOptions);
+    console.log('Email de confirmación enviado al comprador');
+
     return result;
 
   } catch (error) {
@@ -227,19 +266,40 @@ exports.confirmTransfer = onRequest(async (request, response) => {
 exports.rejectTransfer = onRequest(async (request, response) => {
   try {
     const { orderId, token } = request.query;
-    const orderDoc = await firestore.collection('orders').doc(orderId).get();
+    const db = firestore.getFirestore();
+    const orderDoc = await db.collection('orders').doc(orderId).get();
 
     if (!orderDoc.exists || orderDoc.data().rejectToken !== token) {
       return response.status(400).send('Token inválido o orden no encontrada');
     }
-
-    const db = firestore.getFirestore();
 
     // Actualizar el estado de la orden
     await db.collection('orders').doc(orderId).update({
       status: 'rejected',
       updatedAt: firestore.FieldValue.serverTimestamp()
     });
+
+    // Envia email al comprador
+    const mailOptions = {
+      from: process.env.EMAIL_USER,
+      to: orderDoc.data().email,
+      subject: `Transferencia rechazada - Orden ${orderDoc.data().reference}`,
+      html: `
+        <img src="https://firebasestorage.googleapis.com/v0/b/feg-dev.firebasestorage.app/o/logo.png?alt=media&token=071754cd-a5da-48c4-bb72-c016930c6fa8" alt="Logo" style="width: 100px; height: 100px;">
+        <h1>¡Transferencia rechazada!</h1>
+        <p>La transferencia de la orden ${orderDoc.data().reference} ha sido rechazada.</p>
+        <p>Detalles de la transferencia:</p>
+        <ul>
+          <li>Referencia: ${orderDoc.data().reference}</li>
+          <li>Total: $${orderDoc.data().total}</li>
+          <li>Fecha: ${new Date(orderDoc.data().date.seconds * 1000).toLocaleString('es-AR')}</li>
+        </ul>
+        <p>Por favor, envía un correo electrónico a <a href="mailto:mati.iribarren98@gmail.com">mati.iribarren98@gmail.com</a> para más información.</p>
+      `
+    }
+
+    await transporter.sendMail(mailOptions);
+    console.log('Email de rechazo enviado al comprador');
 
     return response.send('Orden rechazada exitosamente');
 
