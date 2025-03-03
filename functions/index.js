@@ -11,6 +11,7 @@ admin.initializeApp(serviceAccount);
 /********* VARIABLES PARA REEMPLAZAR *********/
 const bearerTokenMercadoPago = process.env.BEARER_TOKEN_MERCADO_PAGO;
 const TIENDA_FEG_EMAIL = process.env.TIENDA_FEG_EMAIL;
+const TIENDA_FEG_EMAIL_PASSWORD = process.env.TIENDA_FEG_EMAIL_PASSWORD;
 /********* VARIABLES PARA REEMPLAZAR *********/
 
 // Configurar el transporter (esto iría después de admin.initializeApp)
@@ -18,7 +19,7 @@ const transporter = nodemailer.createTransport({
   service: 'gmail', // o configura tu propio SMTP
   auth: {
     user: TIENDA_FEG_EMAIL,
-    pass: 'iebr shjr njbj udlz' // Se recomienda usar una "app password"
+    pass: TIENDA_FEG_EMAIL_PASSWORD
   }
 });
 
@@ -34,6 +35,7 @@ exports.processOrder = onRequest(async (request, response) => {
     let externalReference;
     let paymentStatus;
     let paymentId;
+
     if (request.body.paymentMethod && request.body.paymentMethod === 'transfer') {
       externalReference = request.body.external_reference;
       paymentStatus = request.body.status;
@@ -84,7 +86,7 @@ exports.processOrder = onRequest(async (request, response) => {
     if (paymentStatus === 'approved') {
       // Procesar actualización de stock
       const stockUpdates = order.products.map(async (product) => {
-        const productRef = db.collection('products').doc(product.id);
+        const productRef = db.collection('stock').where('product', '==', product.id);
 
         return db.runTransaction(async (transaction) => {
           const productDoc = await transaction.get(productRef);
