@@ -111,11 +111,11 @@ exports.processOrder = onRequest(async (request, response) => {
       console.log('Stock actualizado para todos los productos');
 
       const mailOptions = {
-        from: process.env.EMAIL_USER,
+        from: TIENDA_FEG_EMAIL,
         to: 'mati.iribarren98@gmail.com',
         subject: `Nueva venta - Orden ${externalReference}`,
         html: `
-                <img src="https://firebasestorage.googleapis.com/v0/b/feg-dev.firebasestorage.app/o/logo.png?alt=media&token=071754cd-a5da-48c4-bb72-c016930c6fa8" alt="Logo" style="width: 150px; height: 100px;">
+                <img src="https://firebasestorage.googleapis.com/v0/b/feg-dev.firebasestorage.app/o/logo.png?alt=media&token=071754cd-a5da-48c4-bb72-c016930c6fa8" alt="Logo" style="width: 200px; height: 100px;">
                 <h1>¡Nueva venta realizada!</h1>
                 <p>Detalles de la orden:</p>
                 <ul>
@@ -127,8 +127,28 @@ exports.processOrder = onRequest(async (request, response) => {
                 <ul>${order.products.map(p => `<li>${p.name} - ${p.quantity} unidad(es)</li>`).join('')}</ul>`
       };
 
+      const mailToBuyerOptions = {
+        from: TIENDA_FEG_EMAIL,
+        to: order.email,
+        subject: `Compra realizada - Orden ${externalReference}`,
+        html: `
+                <img src="https://firebasestorage.googleapis.com/v0/b/feg-dev.firebasestorage.app/o/logo.png?alt=media&token=071754cd-a5da-48c4-bb72-c016930c6fa8" alt="Logo" style="width: 200px; height: 100px;">
+                <h1>¡Compra realizada!</h1>
+                <p>Muchas gracias por tu compra.</p>
+                <p>Detalles de la orden:</p>
+                <ul>
+                  <li>Fecha: ${new Date(order.date.seconds * 1000).toLocaleString('es-AR')}</li>
+                  <li>Referencia: ${externalReference}</li>
+                  <li>Total: $${order.total}</li>
+                </ul>
+                <h3>Productos vendidos:</h3>
+                <ul>${order.products.map(p => `<li>${p.name} - ${p.quantity} unidad(es)</li>`).join('')}</ul>`
+      };
+
       await transporter.sendMail(mailOptions);
-      console.log('Notificación enviada al vendedor: mati.iribarren98@gmail.com');
+      console.log(`Notificación enviada al vendedor: ${TIENDA_FEG_EMAIL}`);
+      await transporter.sendMail(mailToBuyerOptions);
+      console.log(`Notificación enviada al comprador: ${order.email}`);
     }
 
     return response.send('OK');
@@ -173,11 +193,11 @@ exports.processOrderByTransfer = onDocumentCreated('orders/{orderId}', async (ev
     const rejectUrl = `https://rejecttransfer-pysmgizeyq-uc.a.run.app?orderId=${order.id}&token=${rejectToken}`;
 
     const mailOptions = {
-      from: process.env.EMAIL_USER,
+      from: TIENDA_FEG_EMAIL,
       to: 'mati.iribarren98@gmail.com',
       subject: `Confirmación de transferencia - Orden ${order.reference}`,
       html: `
-          <img src="https://firebasestorage.googleapis.com/v0/b/feg-dev.firebasestorage.app/o/logo.png?alt=media&token=071754cd-a5da-48c4-bb72-c016930c6fa8" alt="Logo" style="width: 150px; height: 100px;">
+          <img src="https://firebasestorage.googleapis.com/v0/b/feg-dev.firebasestorage.app/o/logo.png?alt=media&token=071754cd-a5da-48c4-bb72-c016930c6fa8" alt="Logo" style="width: 200px; height: 100px;">
           <h1>Nueva orden pendiente de confirmación</h1>
           <p>Por favor, confirma si has recibido la transferencia bancaria para la siguiente orden:</p>
           <div style="margin: 20px 0;">
@@ -246,7 +266,7 @@ exports.confirmTransfer = onRequest(async (request, response) => {
       to: orderDoc.data().email,
       subject: `Confirmación de transferencia - Orden ${orderDoc.data().reference}`,
       html: `
-        <img src="https://firebasestorage.googleapis.com/v0/b/feg-dev.firebasestorage.app/o/logo.png?alt=media&token=071754cd-a5da-48c4-bb72-c016930c6fa8" alt="Logo" style="width: 150px; height: 100px;">
+        <img src="https://firebasestorage.googleapis.com/v0/b/feg-dev.firebasestorage.app/o/logo.png?alt=media&token=071754cd-a5da-48c4-bb72-c016930c6fa8" alt="Logo" style="width: 200px; height: 100px;">
         <h1>¡Transferencia confirmada!</h1>
         <p>La transferencia de la orden ${orderDoc.data().reference} ha sido confirmada.</p>
         <p>Detalles de la transferencia:</p>
@@ -288,11 +308,11 @@ exports.rejectTransfer = onRequest(async (request, response) => {
 
     // Envia email al comprador
     const mailOptions = {
-      from: process.env.EMAIL_USER,
+      from: TIENDA_FEG_EMAIL,
       to: orderDoc.data().email,
       subject: `Transferencia rechazada - Orden ${orderDoc.data().reference}`,
       html: `
-        <img src="https://firebasestorage.googleapis.com/v0/b/feg-dev.firebasestorage.app/o/logo.png?alt=media&token=071754cd-a5da-48c4-bb72-c016930c6fa8" alt="Logo" style="width: 150px; height: 100px;">
+        <img src="https://firebasestorage.googleapis.com/v0/b/feg-dev.firebasestorage.app/o/logo.png?alt=media&token=071754cd-a5da-48c4-bb72-c016930c6fa8" alt="Logo" style="width: 200px; height: 100px;">
         <h1>¡Transferencia rechazada!</h1>
         <p>La transferencia de la orden ${orderDoc.data().reference} ha sido rechazada.</p>
         <p>Detalles de la transferencia:</p>
