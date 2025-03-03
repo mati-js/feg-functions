@@ -26,7 +26,7 @@ exports.processOrder = onRequest(async (request, response) => {
     }
 
     const externalReference = request.body.external_reference;
-    const db = firestore;
+    const db = firestore.getFirestore();
 
     // Buscar la orden en Firestore
     const ordersQuery = await db.collection('orders')
@@ -46,7 +46,7 @@ exports.processOrder = onRequest(async (request, response) => {
     };
 
     // Actualizar información de pago
-    await orderDoc.ref.update({
+    await db.collection('orders').doc(order.id).update({
       paymentInformation: request.body,
       updatedAt: firestore.FieldValue.serverTimestamp()
     });
@@ -118,42 +118,44 @@ exports.processOrder = onRequest(async (request, response) => {
   }
 });
 
-exports.processOrderByTransfer = onDocumentCreated('orders/{orderId}', async (snap, context) => {
-    try {
-      const order = {
-        id: snap.id,
-        ...snap.data()
-      };
+exports.processOrderByTransfer = onDocumentCreated('orders/{orderId}', async (event) => {
+  try {
+    const order = {
+      id: event.id,
+      ...event.data.data()
+    };
 
-      // Verificar si es una orden por transferencia
-      if (order.paymentMethod !== 'transferencia') {
-        console.log('Orden no es por transferencia, ignorando:', order.id);
-        return null;
-      }
+    const db = firestore.getFirestore();
 
-      console.log('Procesando nueva orden por transferencia:', order.id);
+    // Verificar si es una orden por transferencia
+    if (order.paymentMethod !== 'transferencia') {
+      console.log('Orden no es por transferencia, ignorando:', order.id);
+      return null;
+    }
 
-      // Generar tokens únicos para confirmar/rechazar
-      const confirmToken = Math.random().toString(36).substring(2, 15);
-      const rejectToken = Math.random().toString(36).substring(2, 15);
+    console.log('Procesando nueva orden por transferencia:', order.id);
 
-      // Guardar los tokens en la orden
-      await snap.ref.update({
-        confirmToken,
-        rejectToken,
-        status: 'pending_confirmation',
-        updatedAt: firestore.FieldValue.serverTimestamp()
-      });
+    // Generar tokens únicos para confirmar/rechazar
+    const confirmToken = Math.random().toString(36).substring(2, 15);
+    const rejectToken = Math.random().toString(36).substring(2, 15);
 
-      // Crear URLs para los botones (reemplaza con tu dominio real)
-      const confirmUrl = `https://confirmtransfer-pysmgizeyq-uc.a.run.app?orderId=${order.id}&token=${confirmToken}`;
-      const rejectUrl = `https://rejecttransfer-pysmgizeyq-uc.a.run.app?orderId=${order.id}&token=${rejectToken}`;
+    // Guardar los tokens en la orden
+    await db.collection('orders').doc(order.id).update({
+      confirmToken,
+      rejectToken,
+      status: 'pending_confirmation',
+      updatedAt: firestore.FieldValue.serverTimestamp()
+    });
 
-      const mailOptions = {
-        from: process.env.EMAIL_USER,
-        to: 'mati.iribarren98@gmail.com',
-        subject: `Confirmación de transferencia - Orden ${order.reference}`,
-        html: `
+    // Crear URLs para los botones (reemplaza con tu dominio real)
+    const confirmUrl = `https://confirmtransfer-pysmgizeyq-uc.a.run.app?orderId=${order.id}&token=${confirmToken}`;
+    const rejectUrl = `https://rejecttransfer-pysmgizeyq-uc.a.run.app?orderId=${order.id}&token=${rejectToken}`;
+
+    const mailOptions = {
+      from: process.env.EMAIL_USER,
+      to: 'mati.iribarren98@gmail.com',
+      subject: `Confirmación de transferencia - Orden ${order.reference}`,
+      html: `
           <h1>Nueva orden pendiente de confirmación</h1>
           <p>Por favor, confirma si has recibido la transferencia bancaria para la siguiente orden:</p>
           <div style="margin: 20px 0;">
@@ -180,18 +182,18 @@ exports.processOrderByTransfer = onDocumentCreated('orders/{orderId}', async (sn
             * Al confirmar la transferencia, la orden será procesada automáticamente.
           </p>
         `
-      };
+    };
 
-      await transporter.sendMail(mailOptions);
-      console.log('Email de confirmación enviado al vendedor');
+    await transporter.sendMail(mailOptions);
+    console.log('Email de confirmación enviado al vendedor');
 
-      return null;
+    return null;
 
-    } catch (error) {
-      console.error('Error en processOrderByTransfer:', error);
-      return null;
-    }
-  });
+  } catch (error) {
+    console.error('Error en processOrderByTransfer:', error);
+    return null;
+  }
+});
 
 // Nuevas funciones para manejar la confirmación/rechazo
 exports.confirmTransfer = onRequest(async (request, response) => {
@@ -231,8 +233,10 @@ exports.rejectTransfer = onRequest(async (request, response) => {
       return response.status(400).send('Token inválido o orden no encontrada');
     }
 
+    const db = firestore.getFirestore();
+
     // Actualizar el estado de la orden
-    await orderDoc.ref.update({
+    await db.collection('orders').doc(orderId).update({
       status: 'rejected',
       updatedAt: firestore.FieldValue.serverTimestamp()
     });
