@@ -12,6 +12,7 @@ admin.initializeApp(serviceAccount);
 const bearerTokenMercadoPago = process.env.BEARER_TOKEN_MERCADO_PAGO;
 const TIENDA_FEG_EMAIL = process.env.TIENDA_FEG_EMAIL;
 const TIENDA_FEG_EMAIL_PASSWORD = process.env.TIENDA_FEG_EMAIL_PASSWORD;
+const PROCESS_ORDER_URL = process.env.PROCESS_ORDER_URL;
 /********* VARIABLES PARA REEMPLAZAR *********/
 
 // Configurar el transporter (esto iría después de admin.initializeApp)
@@ -22,6 +23,20 @@ const transporter = nodemailer.createTransport({
     pass: TIENDA_FEG_EMAIL_PASSWORD
   }
 });
+
+// Agregar esta función auxiliar después de las importaciones
+function formatDateToArgentina(timestamp) {
+  const date = new Date(timestamp.seconds * 1000);
+  return date.toLocaleString('es-AR', {
+    timeZone: 'America/Argentina/Buenos_Aires',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  });
+}
 
 exports.processOrder = onRequest(async (request, response) => {
   try {
@@ -114,14 +129,14 @@ exports.processOrder = onRequest(async (request, response) => {
 
       const mailOptions = {
         from: TIENDA_FEG_EMAIL,
-        to: 'mati.iribarren98@gmail.com',
+        to: TIENDA_FEG_EMAIL,
         subject: `Nueva venta - Orden ${externalReference}`,
         html: `
                 <img src="https://firebasestorage.googleapis.com/v0/b/feg-dev.firebasestorage.app/o/logo.png?alt=media&token=071754cd-a5da-48c4-bb72-c016930c6fa8" alt="Logo" style="width: 200px; height: 100px;">
                 <h1>¡Nueva venta realizada!</h1>
                 <p>Detalles de la orden:</p>
                 <ul>
-                  <li>Fecha: ${new Date(order.date.seconds * 1000).toLocaleString('es-AR')}</li>
+                  <li>Fecha: ${formatDateToArgentina(order.date)}</li>
                   <li>Referencia: ${externalReference}</li>
                   <li>Total: $${order.total}</li>
                 </ul>
@@ -139,7 +154,7 @@ exports.processOrder = onRequest(async (request, response) => {
                 <p>Muchas gracias por tu compra.</p>
                 <p>Detalles de la orden:</p>
                 <ul>
-                  <li>Fecha: ${new Date(order.date.seconds * 1000).toLocaleString('es-AR')}</li>
+                  <li>Fecha: ${formatDateToArgentina(order.date)}</li>
                   <li>Referencia: ${externalReference}</li>
                   <li>Total: $${order.total}</li>
                 </ul>
@@ -207,7 +222,7 @@ exports.processOrderByTransfer = onDocumentCreated('orders/{orderId}', async (ev
             <ul>
               <li>Referencia: ${order.reference}</li>
               <li>Total: $${order.total}</li>
-              <li>Fecha: ${new Date(order.date.seconds * 1000).toLocaleString('es-AR')}</li>
+              <li>Fecha: ${formatDateToArgentina(order.date)}</li>
             </ul>
             <h3>Productos:</h3>
             <ul>
@@ -258,24 +273,31 @@ exports.confirmTransfer = onRequest(async (request, response) => {
     };
 
     // Llamar a processOrder
-    const result = await processOrder({
-      body: simulatedBody
-    }, response);
+    const result = await fetch(PROCESS_ORDER_URL, {
+      method: 'POST',
+      body: JSON.stringify(simulatedBody)
+    });
+
+    let order = orderDoc.data();
 
     // Envia email al comprador
     const mailOptions = {
       from: TIENDA_FEG_EMAIL,
-      to: orderDoc.data().email,
-      subject: `Confirmación de transferencia - Orden ${orderDoc.data().reference}`,
+      to: order.email,
+      subject: `Confirmación de transferencia - Orden ${order.reference}`,
       html: `
         <img src="https://firebasestorage.googleapis.com/v0/b/feg-dev.firebasestorage.app/o/logo.png?alt=media&token=071754cd-a5da-48c4-bb72-c016930c6fa8" alt="Logo" style="width: 200px; height: 100px;">
         <h1>¡Transferencia confirmada!</h1>
-        <p>La transferencia de la orden ${orderDoc.data().reference} ha sido confirmada.</p>
+        <p>La transferencia de la orden ${order.reference} ha sido confirmada.</p>
         <p>Detalles de la transferencia:</p>
         <ul>
-          <li>Referencia: ${orderDoc.data().reference}</li>
-          <li>Total: $${orderDoc.data().total}</li>
-          <li>Fecha: ${new Date(orderDoc.data().date.seconds * 1000).toLocaleString('es-AR')}</li>
+          <li>Fecha: ${formatDateToArgentina(order.date)}</li>
+          <li>Referencia: ${order.reference}</li>
+          <li>Total: $${order.total}</li>
+        </ul>
+        <h3>Productos:</h3>
+        <ul>
+          ${order.products.map(p => `<li>${p.name} - ${p.quantity} unidad(es)</li>`).join('')}
         </ul>
         <p>Gracias por tu compra.</p>
       `
@@ -308,22 +330,24 @@ exports.rejectTransfer = onRequest(async (request, response) => {
       updatedAt: firestore.FieldValue.serverTimestamp()
     });
 
+    let order = orderDoc.data();
+
     // Envia email al comprador
     const mailOptions = {
       from: TIENDA_FEG_EMAIL,
-      to: orderDoc.data().email,
-      subject: `Transferencia rechazada - Orden ${orderDoc.data().reference}`,
+      to: order.email,
+      subject: `Transferencia rechazada - Orden ${order.reference}`,
       html: `
         <img src="https://firebasestorage.googleapis.com/v0/b/feg-dev.firebasestorage.app/o/logo.png?alt=media&token=071754cd-a5da-48c4-bb72-c016930c6fa8" alt="Logo" style="width: 200px; height: 100px;">
         <h1>¡Transferencia rechazada!</h1>
-        <p>La transferencia de la orden ${orderDoc.data().reference} ha sido rechazada.</p>
+        <p>La transferencia de la orden ${order.reference} ha sido rechazada.</p>
         <p>Detalles de la transferencia:</p>
         <ul>
-          <li>Referencia: ${orderDoc.data().reference}</li>
-          <li>Total: $${orderDoc.data().total}</li>
-          <li>Fecha: ${new Date(orderDoc.data().date.seconds * 1000).toLocaleString('es-AR')}</li>
+          <li>Referencia: ${order.reference}</li>
+          <li>Total: $${order.total}</li>
+          <li>Fecha: ${formatDateToArgentina(order.date)}</li>
         </ul>
-        <p>Por favor, envía un correo electrónico a <a href="mailto:mati.iribarren98@gmail.com">mati.iribarren98@gmail.com</a> para más información.</p>
+        <p>Por favor, envía un correo electrónico a <a href="mailto:${TIENDA_FEG_EMAIL}">${TIENDA_FEG_EMAIL}</a> para más información.</p>
       `
     }
 
