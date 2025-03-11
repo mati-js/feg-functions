@@ -51,14 +51,16 @@ exports.processOrder = onRequest(async (request, response) => {
     let paymentStatus;
     let paymentId;
 
-    if (request.body.paymentMethod && request.body.paymentMethod === 'transfer') {
-      externalReference = request.body.external_reference;
-      paymentStatus = request.body.status;
+    const payload = typeof request.body === 'string' ? JSON.parse(request.body) : request.body;
+
+    if (payload?.payment_method == 'transfer') {
+      externalReference = payload.external_reference;
+      paymentStatus = payload.status;
       paymentId = 'transferencia bancaria';
 
     } else {
 
-      const mpId = request.body.data.id;
+      const mpId = payload.data.id;
 
       // Obtener el pago desde mercadopago
       const result = await (await fetch(`https://api.mercadopago.com/v1/payments/${mpId}`, {
@@ -67,7 +69,7 @@ exports.processOrder = onRequest(async (request, response) => {
           'Authorization': bearerTokenMercadoPago
         }
       })).json();
-      
+
       externalReference = result.external_reference;
       paymentStatus = result.status;
       paymentId = mpId;
@@ -101,7 +103,7 @@ exports.processOrder = onRequest(async (request, response) => {
     if (paymentStatus === 'approved') {
       // Procesar actualización de stock
       const stockUpdates = order.products.map(async (product) => {
-        const productRef = db.collection('stock').where('product', '==', product.id);
+        const productRef = db.collection('products').doc(product.id);
 
         return db.runTransaction(async (transaction) => {
           const productDoc = await transaction.get(productRef);
@@ -264,47 +266,19 @@ exports.confirmTransfer = onRequest(async (request, response) => {
     if (!orderDoc.exists || orderDoc.data().confirmToken !== token) {
       return response.status(400).send('Token inválido o orden no encontrada');
     }
-    
 
-    // Simular el body necesario para processOrder
-    const simulatedBody = {
-      external_reference: orderDoc.data().reference,
-      status: 'approved'
-    };
 
     // Llamar a processOrder
     const result = await fetch(PROCESS_ORDER_URL, {
       method: 'POST',
-      body: JSON.stringify(simulatedBody)
+      body: JSON.stringify({
+        payment_method: 'transfer',
+        external_reference: orderDoc.data().reference,
+        status: 'approved'
+      })
     });
 
-    let order = orderDoc.data();
-
-    // Envia email al comprador
-    const mailOptions = {
-      from: TIENDA_FEG_EMAIL,
-      to: order.email,
-      subject: `Confirmación de transferencia - Orden ${order.reference}`,
-      html: `
-        <img src="https://firebasestorage.googleapis.com/v0/b/feg-dev.firebasestorage.app/o/logo.png?alt=media&token=071754cd-a5da-48c4-bb72-c016930c6fa8" alt="Logo" style="width: 200px; height: 100px;">
-        <h1>¡Transferencia confirmada!</h1>
-        <p>La transferencia de la orden ${order.reference} ha sido confirmada.</p>
-        <p>Detalles de la transferencia:</p>
-        <ul>
-          <li>Fecha: ${formatDateToArgentina(order.date)}</li>
-          <li>Referencia: ${order.reference}</li>
-          <li>Total: $${order.total}</li>
-        </ul>
-        <h3>Productos:</h3>
-        <ul>
-          ${order.products.map(p => `<li>${p.name} - ${p.quantity} unidad(es)</li>`).join('')}
-        </ul>
-        <p>Gracias por tu compra.</p>
-      `
-    }
-
-    await transporter.sendMail(mailOptions);
-    console.log('Email de confirmación enviado al comprador');
+    console.log('Resultado de processOrder:', result);
 
     return result;
 
