@@ -8,16 +8,30 @@ require('dotenv').config();
 
 admin.initializeApp(serviceAccount);
 
+/*
+Orden de despliegue:
+processOrder ->
+(completar variable en .env) ->
+confirmTransfer ->
+(completar variable en .env) ->
+rejectTransfer ->
+(completar variable en .env) ->
+processOrderByTransfer
+*/
+
+
 /********* VARIABLES PARA REEMPLAZAR *********/
 const bearerTokenMercadoPago = process.env.BEARER_TOKEN_MERCADO_PAGO;
 const TIENDA_FEG_EMAIL = process.env.TIENDA_FEG_EMAIL;
 const TIENDA_FEG_EMAIL_PASSWORD = process.env.TIENDA_FEG_EMAIL_PASSWORD;
 const PROCESS_ORDER_URL = process.env.PROCESS_ORDER_URL;
+const CONFIRM_ORDER_URL = process.env.CONFIRM_ORDER_URL;
+const REJECT_ORDER_URL = process.env.REJECT_ORDER_URL;
 /********* VARIABLES PARA REEMPLAZAR *********/
 
 // Configurar el transporter (esto iría después de admin.initializeApp)
 const transporter = nodemailer.createTransport({
-  service: 'gmail', // o configura tu propio SMTP
+  service: 'gmail',
   auth: {
     user: TIENDA_FEG_EMAIL,
     pass: TIENDA_FEG_EMAIL_PASSWORD
@@ -38,6 +52,26 @@ function formatDateToArgentina(timestamp) {
   });
 }
 
+exports.isAdmin = onRequest(async (request, response) => {
+  try {
+    
+    const { uid } = request.query;
+    const db = firestore.getFirestore();
+    const adminRef = await db.collection('users').doc(uid).get();
+    
+    if (adminRef.exists) {
+      let data = adminRef.data();
+      response.send(data.admin);
+    } else {
+      response.send(false);
+    }
+
+  } catch (error) {
+    console.error('Error en isAdmin:', error);
+    return response.status(500).send('Error interno del servidor');
+  }
+});
+
 exports.processOrder = onRequest(async (request, response) => {
   try {
     console.log('Iniciando procesamiento de orden:', request.body);
@@ -57,9 +91,7 @@ exports.processOrder = onRequest(async (request, response) => {
       externalReference = payload.external_reference;
       paymentStatus = payload.status;
       paymentId = 'transferencia bancaria';
-
     } else {
-
       const mpId = payload.data.id;
 
       // Obtener el pago desde mercadopago
@@ -74,9 +106,8 @@ exports.processOrder = onRequest(async (request, response) => {
       paymentStatus = result.status;
       paymentId = mpId;
     }
-    const db = firestore.getFirestore();
 
-    // Buscar la orden en Firestore
+    const db = firestore.getFirestore();
     const ordersQuery = await db.collection('orders')
       .where('reference', '==', externalReference)
       .limit(1)
@@ -92,6 +123,12 @@ exports.processOrder = onRequest(async (request, response) => {
       id: orderDoc.id,
       ...orderDoc.data()
     };
+
+    // Validar si la orden ya fue procesada
+    if (order.status === 'approved') {
+      console.log('Orden ya procesada anteriormente:', externalReference);
+      return response.status(200).send({ message: 'Orden ya fue procesada previamente.' });
+    }
 
     // Actualizar información de pago
     await db.collection('orders').doc(order.id).update({
@@ -143,7 +180,39 @@ exports.processOrder = onRequest(async (request, response) => {
                   <li>Total: $${order.total}</li>
                 </ul>
                 <h3>Productos vendidos:</h3>
-                <ul>${order.products.map(p => `<li>${p.name} - ${p.quantity} unidad(es)</li>`).join('')}</ul>`
+                <ul>${order.products.map(p => `<li>${p.name} - ${p.quantity} unidad(es)</li>`).join('')}</ul>
+                <h3>Datos del comprador:</h3>
+                <ul>
+                  <li>Nombre: ${order.name} ${order.surname}</li>
+                  <li>DNI: ${order.DNI}</li>
+                  <li>Email: ${order.email}</li>
+                  <li>Teléfono: ${order.phoneNumber}</li>
+                </ul>
+                <h3>Dirección de envío:</h3>
+                <ul>
+                  <li>Dirección: ${order.shippingAddress}</li>
+                  <li>Ciudad: ${order.shippingCity}</li>
+                  <li>Provincia: ${order.shippingProvince}</li>
+                  <li>Código Postal: ${order.shippingPostalCode}</li>
+                </ul>
+                <h3>Datos de facturación:</h3>
+                <ul>
+                  ${order.facturationType === 'consumidorFinal' ? `
+                    <li>Tipo: Consumidor Final</li>
+                    <li>Nombre: ${order.finalConsumerName} ${order.finalConsumerSurname}</li>
+                    <li>DNI: ${order.finalConsumerDNI}</li>
+                  ` : `
+                    <li>Tipo: Empresa</li>
+                    <li>Razón Social: ${order.companySocialReason}</li>
+                    <li>CUIT: ${order.companyCUIT}</li>
+                    <li>Dirección Fiscal: ${order.companyFiscalAddress}</li>
+                  `}
+                  <li>Dirección: ${order.facturationAddress}</li>
+                  <li>Ciudad: ${order.facturationCity}</li>
+                  <li>Provincia: ${order.facturationProvince}</li>
+                  <li>Código Postal: ${order.facturationPostalCode}</li>
+                </ul>
+              `
       };
 
       const mailToBuyerOptions = {
@@ -160,17 +229,18 @@ exports.processOrder = onRequest(async (request, response) => {
                   <li>Referencia: ${externalReference}</li>
                   <li>Total: $${order.total}</li>
                 </ul>
-                <h3>Productos vendidos:</h3>
+                <h3>Productos:</h3>
                 <ul>${order.products.map(p => `<li>${p.name} - ${p.quantity} unidad(es)</li>`).join('')}</ul>`
       };
 
       await transporter.sendMail(mailOptions);
       console.log(`Notificación enviada al vendedor: ${TIENDA_FEG_EMAIL}`);
+
       await transporter.sendMail(mailToBuyerOptions);
       console.log(`Notificación enviada al comprador: ${order.email}`);
     }
 
-    return response.send('OK');
+    return response.status(200).send('OK');
 
   } catch (error) {
     console.error('Error crítico en processOrder:', error);
@@ -208,12 +278,12 @@ exports.processOrderByTransfer = onDocumentCreated('orders/{orderId}', async (ev
     });
 
     // Crear URLs para los botones (reemplaza con tu dominio real)
-    const confirmUrl = `https://confirmtransfer-pysmgizeyq-uc.a.run.app?orderId=${order.id}&token=${confirmToken}`;
-    const rejectUrl = `https://rejecttransfer-pysmgizeyq-uc.a.run.app?orderId=${order.id}&token=${rejectToken}`;
+    const confirmUrl = `${CONFIRM_ORDER_URL}?orderId=${order.id}&token=${confirmToken}`;
+    const rejectUrl = `${REJECT_ORDER_URL}?orderId=${order.id}&token=${rejectToken}`;
 
     const mailOptions = {
       from: TIENDA_FEG_EMAIL,
-      to: 'mati.iribarren98@gmail.com',
+      to: TIENDA_FEG_EMAIL,
       subject: `Confirmación de transferencia - Orden ${order.reference}`,
       html: `
           <img src="https://firebasestorage.googleapis.com/v0/b/feg-dev.firebasestorage.app/o/logo.png?alt=media&token=071754cd-a5da-48c4-bb72-c016930c6fa8" alt="Logo" style="width: 200px; height: 100px;">
@@ -225,6 +295,7 @@ exports.processOrderByTransfer = onDocumentCreated('orders/{orderId}', async (ev
               <li>Referencia: ${order.reference}</li>
               <li>Total: $${order.total}</li>
               <li>Fecha: ${formatDateToArgentina(order.date)}</li>
+              <li>Mail del comprador: ${order.email}</li>
             </ul>
             <h3>Productos:</h3>
             <ul>
@@ -256,7 +327,6 @@ exports.processOrderByTransfer = onDocumentCreated('orders/{orderId}', async (ev
   }
 });
 
-// Nuevas funciones para manejar la confirmación/rechazo
 exports.confirmTransfer = onRequest(async (request, response) => {
   try {
     const { orderId, token } = request.query;
@@ -267,6 +337,16 @@ exports.confirmTransfer = onRequest(async (request, response) => {
       return response.status(400).send('Token inválido o orden no encontrada');
     }
 
+    const orderData = orderDoc.data();
+
+    // Validar estado actual de la orden
+    if (orderData.status === 'approved') {
+      return response.status(400).send('Esta orden ya fue confirmada previamente');
+    }
+
+    if (orderData.status === 'rejected') {
+      return response.status(400).send('Esta orden fue rechazada y no puede ser confirmada');
+    }
 
     // Llamar a processOrder
     const result = await fetch(PROCESS_ORDER_URL, {
@@ -280,7 +360,7 @@ exports.confirmTransfer = onRequest(async (request, response) => {
 
     console.log('Resultado de processOrder:', result);
 
-    return result;
+    return response.status(200).send('OK');
 
   } catch (error) {
     console.error('Error en confirmTransfer:', error);
@@ -296,6 +376,17 @@ exports.rejectTransfer = onRequest(async (request, response) => {
 
     if (!orderDoc.exists || orderDoc.data().rejectToken !== token) {
       return response.status(400).send('Token inválido o orden no encontrada');
+    }
+
+    const orderData = orderDoc.data();
+
+    // Validar estado actual de la orden
+    if (orderData.status === 'approved') {
+      return response.status(400).send('Esta orden ya fue confirmada y no puede ser rechazada');
+    }
+
+    if (orderData.status === 'rejected') {
+      return response.status(400).send('Esta orden ya fue rechazada previamente');
     }
 
     // Actualizar el estado de la orden
@@ -328,7 +419,7 @@ exports.rejectTransfer = onRequest(async (request, response) => {
     await transporter.sendMail(mailOptions);
     console.log('Email de rechazo enviado al comprador');
 
-    return response.send('Orden rechazada exitosamente');
+    return response.status(200).send('Orden rechazada exitosamente');
 
   } catch (error) {
     console.error('Error en rejectTransfer:', error);
